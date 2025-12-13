@@ -24,7 +24,7 @@ A production-ready Retrieval-Augmented Generation system with agentic capabiliti
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/agentic-rag-system.git
+git clone https://github.com/EmmanuelleB985/agentic-rag-system.git
 cd agentic-rag-system
 
 # Create virtual environment
