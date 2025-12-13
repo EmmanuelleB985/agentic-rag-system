@@ -1,0 +1,95 @@
+# Agentic RAG System Configuration
+
+# Model Settings
+model:
+  name: "mistralai/Mistral-7B-Instruct-v0.2"  # Options: mistral-7b, llama-2-7b, phi-2
+  quantization: "4bit"  # Options: none, 8bit, 4bit
+  max_length: 4096
+  temperature: 0.7
+  top_p: 0.95
+  device: "cuda"  # Options: cuda, cpu
+
+# Embedding Model
+embeddings:
+  model: "BAAI/bge-base-en-v1.5"  # Options: bge-base, bge-large, instructor-base
+  batch_size: 32
+  normalize: true
+
+# Retrieval Settings
+retrieval:
+  chunk_size: 512
+  chunk_overlap: 50
+  top_k: 5
+  rerank_top_k: 3
+  similarity_threshold: 0.7
+  use_hybrid_search: false  # Combine dense and sparse retrieval
+
+# Agent Settings
+agent:
+  max_iterations: 5
+  tools_enabled: 
+    - "retrieval"
+    - "calculator"
+    - "web_search"
+  decision_threshold: 0.7
+  reasoning_temperature: 0.8
+  use_chain_of_thought: true
+  self_reflection: true
+
+# Vector Store Settings
+vector_store:
+  type: "faiss"  # Options: faiss, chromadb, qdrant
+  index_type: "flat"  # Options: flat, ivf, hnsw
+  metric: "l2"  # Options: l2, cosine, ip
+  cache_dir: "./data/indices"
+
+# Data Settings
+data:
+  datasets_dir: "./data/datasets"
+  cache_dir: "./data/cache"
+  max_document_length: 10000
+  preprocessing:
+    remove_html: true
+    lowercase: false
+    remove_special_chars: false
+
+# Performance Settings
+performance:
+  batch_size: 8
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+  mixed_precision: true
+  gradient_accumulation_steps: 1
+
+# Logging Settings
+logging:
+  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  file: "./logs/rag_system.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  use_wandb: false
+  wandb_project: "agentic-rag"
+
+# API Settings 
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_enabled: true
+  rate_limit: 100  # requests per minute
+  timeout: 60  # seconds
+
+# Evaluation Settings
+evaluation:
+  metrics:
+    - "f1"
+    - "exact_match"
+    - "rouge_l"
+    - "bertscore"
+  test_size: 0.1
+  seed: 42
+
+# Resource Limits
+resources:
+  max_memory_gb: 20  # GPU memory limit
+  cpu_threads: 8
+  disk_cache_gb: 50
