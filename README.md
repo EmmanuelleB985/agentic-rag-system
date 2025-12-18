@@ -1,4 +1,4 @@
-# Agentic RAG System - Multimodal Edition
+# Multimodal Agentic RAG System
 
 Retrieval-Augmented Generation system with **multimodal capabilities** (text, image, audio, video), agentic decision-making, and GPU optimization for 20GB GPUs.
 
