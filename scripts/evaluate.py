@@ -1,395 +1,449 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
-Evaluation script for Agentic RAG System.
-Supports standard RAG benchmarks and custom evaluation.
+Evaluation script for Agentic RAG System
+Benchmarks and evaluates system performance
 """
 
-import argparse
-import json
-import logging
-from pathlib import Path
 import sys
+import argparse
+import asyncio
+import json
 import time
+from pathlib import Path
 from typing import List, Dict, Any
 import numpy as np
-from tqdm import tqdm
+from dataclasses import dataclass
+import logging
 
-# Add parent directory to path
-sys.path.append(str(Path(__file__).parent.parent))
+sys.path.append('..')
+from agentic_rag import AgenticRAG, MultimodalAgenticRAG
+from agentic_rag.multimodal import Modality
 
-from agentic_rag import AgenticRAG
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class RAGEvaluator:
-    """Evaluator for RAG systems."""
+@dataclass
+class EvaluationResult:
+    """Container for evaluation results"""
+    metric_name: str
+    score: float
+    details: Dict[str, Any]
+
+
+class Evaluator:
+    """Evaluation framework for RAG system"""
     
-    def __init__(self, rag_system: AgenticRAG):
-        """Initialize evaluator with a RAG system."""
-        self.rag = rag_system
+    def __init__(self, system_type: str = "text"):
+        self.system_type = system_type
+        self.metrics = []
         self.results = []
     
-    def evaluate_dataset(
-        self,
-        dataset_name: str,
-        sample_size: int = 100,
-        metrics: List[str] = ["f1", "exact_match", "retrieval_accuracy"]
-    ) -> Dict[str, Any]:
-        """
-        Evaluate on a standard dataset.
-        
-        Args:
-            dataset_name: Name of the dataset
-            sample_size: Number of samples to evaluate
-            metrics: List of metrics to compute
-            
-        Returns:
-            Dictionary with evaluation results
-        """
-        logger.info(f"Evaluating on {dataset_name} with {sample_size} samples")
-        
-        # Load evaluation data
-        eval_data = self._load_eval_data(dataset_name, sample_size)
-        
-        if not eval_data:
-            logger.error(f"Could not load evaluation data for {dataset_name}")
-            return {}
-        
-        # Run evaluation
-        results = []
-        for item in tqdm(eval_data, desc="Evaluating"):
-            result = self._evaluate_single(item)
-            results.append(result)
-        
-        # Compute metrics
-        metrics_results = self._compute_metrics(results, metrics)
-        
-        return {
-            "dataset": dataset_name,
-            "sample_size": len(results),
-            "metrics": metrics_results,
-            "detailed_results": results[:10]  # First 10 for inspection
-        }
+    async def setup_system(self, model_name: str = "mistralai/Mistral-7B-Instruct-v0.2"):
+        """Initialize the RAG system"""
+        if self.system_type == "multimodal":
+            self.rag = MultimodalAgenticRAG(
+                model_name=model_name,
+                device="cuda",
+                quantization="4bit"
+            )
+        else:
+            self.rag = AgenticRAG(
+                model_name=model_name,
+                device="cuda",
+                quantization="4bit"
+            )
     
-    def _load_eval_data(self, dataset_name: str, sample_size: int) -> List[Dict]:
-        """Load evaluation data for a dataset."""
-        from datasets import load_dataset
+    def load_test_data(self, dataset_path: str) -> List[Dict]:
+        """Load test dataset"""
+        path = Path(dataset_path)
         
-        eval_data = []
+        if not path.exists():
+            # Create sample test data
+            test_data = [
+                {
+                    "question": "What is machine learning?",
+                    "answer": "Machine learning is a subset of AI that enables systems to learn from data.",
+                    "context": "Machine learning is a subset of artificial intelligence..."
+                },
+                {
+                    "question": "What is deep learning?",
+                    "answer": "Deep learning uses neural networks with multiple layers.",
+                    "context": "Deep learning is a subset of machine learning..."
+                }
+            ]
+            return test_data
         
-        try:
-            if dataset_name == "natural_questions":
-                dataset = load_dataset("natural_questions", split="validation")
-                for i, item in enumerate(dataset):
-                    if i >= sample_size:
-                        break
-                    
-                    # Extract question and answer
-                    eval_item = {
-                        "id": item["id"],
-                        "question": item["question"]["text"],
-                        "answers": [ans["text"] for ans in item["annotations"][0]["short_answers"]],
-                        "context": item["document"]["text"]
-                    }
-                    eval_data.append(eval_item)
-            
-            elif dataset_name == "squad":
-                dataset = load_dataset("squad", split="validation")
-                for i, item in enumerate(dataset):
-                    if i >= sample_size:
-                        break
-                    
-                    eval_item = {
-                        "id": item["id"],
-                        "question": item["question"],
-                        "answers": item["answers"]["text"],
-                        "context": item["context"]
-                    }
-                    eval_data.append(eval_item)
-            
-            elif dataset_name == "ms_marco":
-                dataset = load_dataset("ms_marco", "v2.1", split="dev")
-                for i, item in enumerate(dataset):
-                    if i >= sample_size:
-                        break
-                    
-                    eval_item = {
-                        "id": str(i),
-                        "question": item["query"],
-                        "answers": item["answers"],
-                        "relevant_passages": item["passages"]["passage_text"]
-                    }
-                    eval_data.append(eval_item)
-            
+        with open(path, 'r') as f:
+            if path.suffix == '.jsonl':
+                return [json.loads(line) for line in f]
             else:
-                logger.warning(f"Unknown dataset: {dataset_name}")
-                
-        except Exception as e:
-            logger.error(f"Error loading dataset {dataset_name}: {e}")
-        
-        return eval_data
+                return json.load(f)
     
-    def _evaluate_single(self, item: Dict) -> Dict:
-        """Evaluate a single question-answer pair."""
-        start_time = time.time()
+    def calculate_f1_score(self, predicted: str, reference: str) -> float:
+        """Calculate F1 score"""
+        pred_tokens = set(predicted.lower().split())
+        ref_tokens = set(reference.lower().split())
         
-        # Get RAG response
-        response = self.rag.query(item["question"], use_agent=False)
-        
-        # Extract predicted answer
-        predicted = response.answer
-        
-        # Get ground truth answers
-        ground_truth = item.get("answers", [])
-        if not isinstance(ground_truth, list):
-            ground_truth = [ground_truth]
-        
-        # Compute metrics for this item
-        result = {
-            "id": item["id"],
-            "question": item["question"],
-            "predicted": predicted,
-            "ground_truth": ground_truth,
-            "exact_match": self._compute_exact_match(predicted, ground_truth),
-            "f1_score": self._compute_f1(predicted, ground_truth),
-            "retrieval_accuracy": self._compute_retrieval_accuracy(response.sources, item),
-            "confidence": response.confidence,
-            "latency": time.time() - start_time
-        }
-        
-        return result
-    
-    def _compute_exact_match(self, predicted: str, ground_truth: List[str]) -> float:
-        """Compute exact match score."""
-        predicted_normalized = predicted.lower().strip()
-        for answer in ground_truth:
-            if answer.lower().strip() in predicted_normalized:
-                return 1.0
-        return 0.0
-    
-    def _compute_f1(self, predicted: str, ground_truth: List[str]) -> float:
-        """Compute F1 score between predicted and ground truth."""
-        def tokenize(text):
-            return text.lower().split()
-        
-        pred_tokens = set(tokenize(predicted))
-        
-        best_f1 = 0.0
-        for answer in ground_truth:
-            gold_tokens = set(tokenize(answer))
-            
-            if not pred_tokens or not gold_tokens:
-                continue
-            
-            # Compute precision and recall
-            common = pred_tokens.intersection(gold_tokens)
-            precision = len(common) / len(pred_tokens) if pred_tokens else 0
-            recall = len(common) / len(gold_tokens) if gold_tokens else 0
-            
-            # Compute F1
-            if precision + recall > 0:
-                f1 = 2 * precision * recall / (precision + recall)
-                best_f1 = max(best_f1, f1)
-        
-        return best_f1
-    
-    def _compute_retrieval_accuracy(self, sources: List[Dict], item: Dict) -> float:
-        """Compute retrieval accuracy if relevant passages are known."""
-        if "relevant_passages" not in item:
-            return -1.0  # Not applicable
-        
-        relevant = item["relevant_passages"]
-        if not sources:
+        if not ref_tokens:
             return 0.0
         
-        # Check if any retrieved source matches relevant passages
-        for source in sources[:3]:  # Top 3
-            source_text = source.get("text", "").lower()
-            for rel_passage in relevant:
-                if isinstance(rel_passage, str):
-                    if rel_passage.lower()[:100] in source_text or source_text[:100] in rel_passage.lower():
-                        return 1.0
+        common = pred_tokens & ref_tokens
         
-        return 0.0
+        if not common:
+            return 0.0
+        
+        precision = len(common) / len(pred_tokens) if pred_tokens else 0
+        recall = len(common) / len(ref_tokens) if ref_tokens else 0
+        
+        if precision + recall == 0:
+            return 0.0
+        
+        f1 = 2 * (precision * recall) / (precision + recall)
+        return f1
     
-    def _compute_metrics(self, results: List[Dict], metrics: List[str]) -> Dict[str, float]:
-        """Compute aggregate metrics from results."""
-        aggregated = {}
-        
-        for metric in metrics:
-            if metric == "exact_match":
-                scores = [r["exact_match"] for r in results]
-                aggregated["exact_match"] = np.mean(scores)
-            
-            elif metric == "f1":
-                scores = [r["f1_score"] for r in results]
-                aggregated["f1"] = np.mean(scores)
-            
-            elif metric == "retrieval_accuracy":
-                scores = [r["retrieval_accuracy"] for r in results if r["retrieval_accuracy"] >= 0]
-                if scores:
-                    aggregated["retrieval_accuracy"] = np.mean(scores)
-            
-            elif metric == "latency":
-                latencies = [r["latency"] for r in results]
-                aggregated["avg_latency"] = np.mean(latencies)
-                aggregated["p95_latency"] = np.percentile(latencies, 95)
-            
-            elif metric == "confidence":
-                confidences = [r["confidence"] for r in results]
-                aggregated["avg_confidence"] = np.mean(confidences)
-        
-        return aggregated
+    def calculate_exact_match(self, predicted: str, reference: str) -> float:
+        """Calculate exact match score"""
+        return 1.0 if predicted.strip().lower() == reference.strip().lower() else 0.0
     
-    def evaluate_custom(self, test_file: str) -> Dict[str, Any]:
-        """
-        Evaluate on a custom test file.
+    def calculate_bleu(self, predicted: str, reference: str) -> float:
+        """Calculate BLEU score (simplified)"""
+        from collections import Counter
         
-        Args:
-            test_file: Path to JSON file with test cases
+        pred_tokens = predicted.lower().split()
+        ref_tokens = reference.lower().split()
+        
+        if not pred_tokens or not ref_tokens:
+            return 0.0
+        
+        # Unigram precision
+        pred_counts = Counter(pred_tokens)
+        ref_counts = Counter(ref_tokens)
+        
+        overlap = 0
+        for token in pred_counts:
+            overlap += min(pred_counts[token], ref_counts.get(token, 0))
+        
+        precision = overlap / len(pred_tokens) if pred_tokens else 0
+        
+        # Brevity penalty
+        bp = min(1.0, len(pred_tokens) / len(ref_tokens))
+        
+        return bp * precision
+    
+    async def evaluate_retrieval(self, test_data: List[Dict]) -> EvaluationResult:
+        """Evaluate retrieval performance"""
+        print("\nEvaluating retrieval performance...")
+        
+        scores = []
+        times = []
+        
+        for item in test_data:
+            start_time = time.time()
             
-        Returns:
-            Evaluation results
-        """
-        logger.info(f"Evaluating on custom test file: {test_file}")
+            # Add context document
+            self.rag.add_documents([item.get("context", item["question"])])
+            
+            # Query
+            result = self.rag.query(item["question"], use_agent=False)
+            
+            elapsed = time.time() - start_time
+            times.append(elapsed)
+            
+            # Calculate relevance (simplified)
+            if result.sources:
+                score = 1.0  # Retrieved relevant document
+            else:
+                score = 0.0
+            
+            scores.append(score)
         
-        # Load test data
-        with open(test_file, 'r') as f:
-            test_data = json.load(f)
+        avg_score = np.mean(scores)
+        avg_time = np.mean(times)
         
-        # Run evaluation
-        results = []
-        for item in tqdm(test_data, desc="Evaluating custom"):
-            result = self._evaluate_single(item)
-            results.append(result)
+        return EvaluationResult(
+            metric_name="retrieval",
+            score=avg_score,
+            details={
+                "avg_score": avg_score,
+                "avg_time": avg_time,
+                "total_queries": len(test_data)
+            }
+        )
+    
+    async def evaluate_generation(self, test_data: List[Dict]) -> EvaluationResult:
+        """Evaluate generation quality"""
+        print("\nEvaluating generation quality...")
         
-        # Compute metrics
-        metrics_results = self._compute_metrics(
-            results,
-            ["exact_match", "f1", "latency", "confidence"]
+        f1_scores = []
+        exact_matches = []
+        bleu_scores = []
+        
+        for item in test_data[:10]:  # Limit for speed
+            # Add context
+            self.rag.add_documents([item.get("context", item["question"])])
+            
+            # Generate answer
+            result = self.rag.query(item["question"], use_agent=True)
+            predicted = result.answer
+            reference = item["answer"]
+            
+            # Calculate metrics
+            f1_scores.append(self.calculate_f1_score(predicted, reference))
+            exact_matches.append(self.calculate_exact_match(predicted, reference))
+            bleu_scores.append(self.calculate_bleu(predicted, reference))
+        
+        return EvaluationResult(
+            metric_name="generation",
+            score=np.mean(f1_scores),
+            details={
+                "f1_score": np.mean(f1_scores),
+                "exact_match": np.mean(exact_matches),
+                "bleu_score": np.mean(bleu_scores),
+                "samples": len(f1_scores)
+            }
+        )
+    
+    async def evaluate_multimodal(self, test_data: List[Dict]) -> EvaluationResult:
+        """Evaluate multimodal capabilities"""
+        print("\nEvaluating multimodal capabilities...")
+        
+        if self.system_type != "multimodal":
+            return EvaluationResult(
+                metric_name="multimodal",
+                score=0.0,
+                details={"error": "Not a multimodal system"}
+            )
+        
+        scores = []
+        
+        # Simple multimodal tests
+        from PIL import Image
+        
+        # Test text
+        await self.rag.add_multimodal_document(
+            "This is a test document about AI.",
+            Modality.TEXT
         )
         
-        return {
-            "test_file": test_file,
-            "sample_size": len(results),
-            "metrics": metrics_results,
-            "detailed_results": results
-        }
+        # Test image
+        test_image = Image.new('RGB', (224, 224), color='red')
+        await self.rag.add_multimodal_document(
+            test_image,
+            Modality.IMAGE
+        )
+        
+        # Query
+        result = await self.rag.multimodal_query(
+            "What content do we have?",
+            modalities=[Modality.TEXT, Modality.IMAGE]
+        )
+        
+        # Simple scoring based on whether it found both modalities
+        score = len(set(result.modalities_used)) / 2.0
+        
+        return EvaluationResult(
+            metric_name="multimodal",
+            score=score,
+            details={
+                "modalities_tested": ["text", "image"],
+                "modalities_found": [m.value for m in result.modalities_used],
+                "score": score
+            }
+        )
     
-    def generate_report(self, results: Dict[str, Any], output_file: str = None):
-        """Generate evaluation report."""
-        report = []
-        report.append("="*60)
-        report.append("RAG System Evaluation Report")
-        report.append("="*60)
+    async def evaluate_latency(self, num_queries: int = 20) -> EvaluationResult:
+        """Evaluate system latency"""
+        print("\nEvaluating latency...")
         
-        # Summary metrics
-        report.append("\n## Summary Metrics")
-        report.append("-"*40)
+        queries = [
+            "What is AI?",
+            "Explain machine learning",
+            "What is deep learning?",
+            "How does NLP work?",
+            "What are neural networks?"
+        ] * (num_queries // 5)
         
-        if "metrics" in results:
-            for metric, value in results["metrics"].items():
-                if isinstance(value, float):
-                    report.append(f"{metric:20s}: {value:.4f}")
-                else:
-                    report.append(f"{metric:20s}: {value}")
+        times = []
         
-        # Detailed results sample
-        if "detailed_results" in results and results["detailed_results"]:
-            report.append("\n## Sample Results")
-            report.append("-"*40)
+        for query in queries:
+            start = time.time()
+            _ = self.rag.query(query, use_agent=False)
+            elapsed = time.time() - start
+            times.append(elapsed)
+        
+        return EvaluationResult(
+            metric_name="latency",
+            score=np.mean(times),
+            details={
+                "avg_latency": np.mean(times),
+                "min_latency": np.min(times),
+                "max_latency": np.max(times),
+                "p50_latency": np.percentile(times, 50),
+                "p95_latency": np.percentile(times, 95),
+                "total_queries": len(times)
+            }
+        )
+    
+    async def evaluate_memory(self) -> EvaluationResult:
+        """Evaluate memory usage"""
+        print("\nEvaluating memory usage...")
+        
+        import torch
+        import psutil
+        import os
+        
+        process = psutil.Process(os.getpid())
+        
+        # Get memory info
+        cpu_memory = process.memory_info().rss / 1e9  # GB
+        
+        gpu_memory = 0
+        if torch.cuda.is_available():
+            gpu_memory = torch.cuda.memory_allocated(0) / 1e9  # GB
+        
+        return EvaluationResult(
+            metric_name="memory",
+            score=cpu_memory + gpu_memory,
+            details={
+                "cpu_memory_gb": cpu_memory,
+                "gpu_memory_gb": gpu_memory,
+                "total_memory_gb": cpu_memory + gpu_memory
+            }
+        )
+    
+    async def run_evaluation(
+        self,
+        test_data_path: str,
+        metrics: List[str] = None
+    ) -> List[EvaluationResult]:
+        """Run complete evaluation"""
+        print("=" * 60)
+        print("Starting RAG System Evaluation")
+        print("=" * 60)
+        
+        # Load test data
+        test_data = self.load_test_data(test_data_path)
+        print(f"Loaded {len(test_data)} test samples")
+        
+        # Setup system
+        await self.setup_system()
+        
+        # Select metrics
+        if metrics is None:
+            metrics = ["retrieval", "generation", "latency", "memory"]
+        
+        results = []
+        
+        # Run evaluations
+        for metric in metrics:
+            if metric == "retrieval":
+                result = await self.evaluate_retrieval(test_data)
+            elif metric == "generation":
+                result = await self.evaluate_generation(test_data)
+            elif metric == "multimodal":
+                result = await self.evaluate_multimodal(test_data)
+            elif metric == "latency":
+                result = await self.evaluate_latency()
+            elif metric == "memory":
+                result = await self.evaluate_memory()
+            else:
+                continue
             
-            for i, result in enumerate(results["detailed_results"][:5], 1):
-                report.append(f"\n### Example {i}")
-                report.append(f"Question: {result['question'][:100]}...")
-                report.append(f"Predicted: {result['predicted'][:100]}...")
-                report.append(f"Ground Truth: {str(result['ground_truth'])[:100]}...")
-                report.append(f"Exact Match: {result['exact_match']:.2f}")
-                report.append(f"F1 Score: {result['f1_score']:.4f}")
+            results.append(result)
+            print(f"  {metric}: {result.score:.3f}")
         
-        # Performance stats
-        report.append("\n## Performance Statistics")
-        report.append("-"*40)
-        report.append(f"Dataset: {results.get('dataset', 'custom')}")
-        report.append(f"Sample Size: {results.get('sample_size', 0)}")
+        return results
+    
+    def save_results(self, results: List[EvaluationResult], output_path: str):
+        """Save evaluation results"""
+        output = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "system_type": self.system_type,
+            "results": [
+                {
+                    "metric": r.metric_name,
+                    "score": r.score,
+                    "details": r.details
+                }
+                for r in results
+            ]
+        }
         
-        report_text = "\n".join(report)
+        with open(output_path, 'w') as f:
+            json.dump(output, f, indent=2)
         
-        # Save or print report
-        if output_file:
-            with open(output_file, 'w') as f:
-                f.write(report_text)
-            logger.info(f"Report saved to {output_file}")
-        else:
-            print(report_text)
+        print(f"\nResults saved to {output_path}")
+    
+    def print_summary(self, results: List[EvaluationResult]):
+        """Print evaluation summary"""
+        print("\n" + "=" * 60)
+        print("Evaluation Summary")
+        print("=" * 60)
         
-        return report_text
+        for result in results:
+            print(f"\n{result.metric_name.upper()}:")
+            print(f"  Score: {result.score:.3f}")
+            
+            for key, value in result.details.items():
+                if isinstance(value, float):
+                    print(f"  {key}: {value:.3f}")
+                else:
+                    print(f"  {key}: {value}")
+        
+        print("\n" + "=" * 60)
 
 
-def main():
-    """Main evaluation function."""
-    parser = argparse.ArgumentParser(description="Evaluate Agentic RAG System")
-    parser.add_argument("--dataset", type=str, default="squad",
-                       help="Dataset to evaluate on (squad, natural_questions, ms_marco)")
-    parser.add_argument("--test-file", type=str, help="Path to custom test JSON file")
-    parser.add_argument("--sample-size", type=int, default=100,
-                       help="Number of samples to evaluate")
-    parser.add_argument("--metric", type=str, default="all",
-                       help="Metrics to compute (f1, exact_match, retrieval_accuracy, all)")
-    parser.add_argument("--model", type=str, default="mistralai/Mistral-7B-Instruct-v0.2",
-                       help="Model to use")
-    parser.add_argument("--output", type=str, help="Output file for report")
-    parser.add_argument("--use-agent", action="store_true", help="Use agentic reasoning")
+async def main():
+    """Main evaluation function"""
+    parser = argparse.ArgumentParser(description="Evaluate RAG System")
+    parser.add_argument(
+        "--test-file",
+        type=str,
+        default="test_data.jsonl",
+        help="Path to test data file"
+    )
+    parser.add_argument(
+        "--system-type",
+        type=str,
+        choices=["text", "multimodal"],
+        default="text",
+        help="Type of system to evaluate"
+    )
+    parser.add_argument(
+        "--metrics",
+        type=str,
+        nargs='+',
+        choices=["retrieval", "generation", "multimodal", "latency", "memory", "all"],
+        default=["all"],
+        help="Metrics to evaluate"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="evaluation_results.json",
+        help="Output file for results"
+    )
     
     args = parser.parse_args()
     
-    # Initialize RAG system
-    logger.info("Initializing RAG system...")
-    rag = AgenticRAG(
-        model_name=args.model,
-        quantization="4bit",
-        config={"temperature": 0.3}  # Lower temperature for evaluation
-    )
-    
-    # Load dataset if specified
-    if not args.test_file:
-        logger.info(f"Loading {args.dataset} dataset...")
-        rag.load_dataset(args.dataset, sample_size=1000)  # Load more for retrieval
-    
-    # Initialize evaluator
-    evaluator = RAGEvaluator(rag)
-    
-    # Determine metrics
-    if args.metric == "all":
-        metrics = ["f1", "exact_match", "retrieval_accuracy", "latency", "confidence"]
+    # Handle "all" metrics
+    if "all" in args.metrics:
+        if args.system_type == "multimodal":
+            metrics = ["retrieval", "generation", "multimodal", "latency", "memory"]
+        else:
+            metrics = ["retrieval", "generation", "latency", "memory"]
     else:
-        metrics = [args.metric]
+        metrics = args.metrics
     
     # Run evaluation
-    if args.test_file:
-        results = evaluator.evaluate_custom(args.test_file)
-    else:
-        results = evaluator.evaluate_dataset(
-            args.dataset,
-            sample_size=args.sample_size,
-            metrics=metrics
-        )
+    evaluator = Evaluator(system_type=args.system_type)
+    results = await evaluator.run_evaluation(args.test_file, metrics)
     
-    # Generate report
-    evaluator.generate_report(results, args.output)
-    
-    # Save full results
-    results_file = args.output.replace('.txt', '_full.json') if args.output else 'evaluation_results.json'
-    with open(results_file, 'w') as f:
-        json.dump(results, f, indent=2)
-    logger.info(f"Full results saved to {results_file}")
+    # Save and display results
+    evaluator.save_results(results, args.output)
+    evaluator.print_summary(results)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

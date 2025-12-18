@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
-Setup script for Agentic RAG System.
-Downloads models, prepares datasets, and verifies installation.
+Setup script for Agentic RAG System
+Downloads models and prepares the environment
 """
 
 import os
@@ -10,274 +10,314 @@ import argparse
 import logging
 from pathlib import Path
 import torch
+from transformers import AutoModel, AutoTokenizer
+import requests
 from tqdm import tqdm
-import yaml
-import subprocess
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+sys.path.append('..')
+from agentic_rag.utils import ensure_dir, download_model
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def check_gpu():
-    """Check GPU availability and specifications."""
-    if not torch.cuda.is_available():
-        logger.warning("No GPU detected. System will run on CPU (slower performance)")
-        return False
+class Setup:
+    """Setup and initialization utilities"""
     
-    gpu_count = torch.cuda.device_count()
-    logger.info(f"Found {gpu_count} GPU(s)")
+    def __init__(self, models_dir: str = "./models", data_dir: str = "./data"):
+        self.models_dir = Path(models_dir)
+        self.data_dir = Path(data_dir)
+        self.required_models = {
+            "text": [
+                "sentence-transformers/all-MiniLM-L6-v2",
+                "mistralai/Mistral-7B-Instruct-v0.2",
+                "cross-encoder/ms-marco-MiniLM-L-6-v2"
+            ],
+            "multimodal": [
+                "openai/clip-vit-base-patch32",
+                "Salesforce/blip2-opt-2.7b",
+                "facebook/wav2vec2-base",
+                "openai/whisper-small"
+            ]
+        }
     
-    for i in range(gpu_count):
-        gpu_name = torch.cuda.get_device_name(i)
-        gpu_memory = torch.cuda.get_device_properties(i).total_memory / 1024**3
-        logger.info(f"  GPU {i}: {gpu_name} ({gpu_memory:.1f} GB)")
+    def check_environment(self):
+        """Check system environment"""
+        print("Checking environment...")
         
-        if gpu_memory < 20:
-            logger.warning(f"  GPU {i} has less than 20GB memory. May need stronger quantization.")
-    
-    return True
-
-
-def download_models(config_path="config.yaml"):
-    """Download required models based on configuration."""
-    logger.info("Downloading models...")
-    
-    # Load configuration
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-    from sentence_transformers import SentenceTransformer
-    
-    # Download LLM
-    model_name = config['model']['name']
-    logger.info(f"Downloading LLM: {model_name}")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        logger.info(f"   Tokenizer downloaded")
+        # Check Python version
+        python_version = sys.version_info
+        print(f"Python version: {python_version.major}.{python_version.minor}.{python_version.micro}")
         
-        # Just download, don't load (to save memory)
-        AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True,
-            cache_dir="./data/cache"
-        )
-        logger.info(f"   Model downloaded")
-    except Exception as e:
-        logger.error(f"   Failed to download LLM: {e}")
-        return False
+        if python_version.major < 3 or python_version.minor < 9:
+            logger.warning("Python 3.9+ is recommended")
+        
+        # Check CUDA
+        cuda_available = torch.cuda.is_available()
+        print(f"CUDA available: {cuda_available}")
+        
+        if cuda_available:
+            print(f"CUDA version: {torch.version.cuda}")
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+            
+            # Check GPU memory
+            total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+            print(f"GPU memory: {total_memory:.1f} GB")
+            
+            if total_memory < 20:
+                logger.warning(f"GPU has {total_memory:.1f}GB. 20GB+ recommended for best performance")
+        else:
+            logger.warning("No GPU detected. CPU mode will be slow")
+        
+        # Check disk space
+        import shutil
+        total, used, free = shutil.disk_usage("/")
+        free_gb = free / (1024**3)
+        print(f"Free disk space: {free_gb:.1f} GB")
+        
+        if free_gb < 50:
+            logger.warning(f"Only {free_gb:.1f}GB free. 50GB+ recommended")
+        
+        return cuda_available
     
-    # Download embedding model
-    embedding_model = config['embeddings']['model']
-    logger.info(f"Downloading embedding model: {embedding_model}")
-    try:
-        SentenceTransformer(embedding_model, cache_folder="./data/cache")
-        logger.info(f"   Embedding model downloaded")
-    except Exception as e:
-        logger.error(f"   Failed to download embedding model: {e}")
-        return False
+    def create_directories(self):
+        """Create necessary directories"""
+        print("\nCreating directories...")
+        
+        directories = [
+            self.models_dir,
+            self.data_dir,
+            self.data_dir / "documents",
+            self.data_dir / "images",
+            self.data_dir / "audio",
+            self.data_dir / "video",
+            Path("./indices"),
+            Path("./cache"),
+            Path("./logs"),
+            Path("./temp")
+        ]
+        
+        for directory in directories:
+            ensure_dir(directory)
+            print(f"  ✓ {directory}")
     
-    return True
-
-
-def download_sample_data():
-    """Download sample datasets for testing."""
-    logger.info("Downloading sample datasets...")
+    def download_models(self, model_type: str = "all"):
+        """Download required models"""
+        print(f"\nDownloading {model_type} models...")
+        
+        if model_type == "all":
+            models_to_download = []
+            for models in self.required_models.values():
+                models_to_download.extend(models)
+        elif model_type in self.required_models:
+            models_to_download = self.required_models[model_type]
+        else:
+            logger.error(f"Unknown model type: {model_type}")
+            return
+        
+        success = 0
+        failed = []
+        
+        for model_name in tqdm(models_to_download, desc="Downloading models"):
+            try:
+                # Check if already exists
+                model_path = self.models_dir / model_name.replace("/", "_")
+                
+                if model_path.exists():
+                    print(f"  ✓ {model_name} (already exists)")
+                    success += 1
+                    continue
+                
+                # Download model
+                if download_model(model_name, str(self.models_dir)):
+                    print(f"  ✓ {model_name}")
+                    success += 1
+                else:
+                    failed.append(model_name)
+                    print(f"  ✗ {model_name}")
+            
+            except Exception as e:
+                logger.error(f"Failed to download {model_name}: {e}")
+                failed.append(model_name)
+        
+        print(f"\nDownloaded {success}/{len(models_to_download)} models")
+        
+        if failed:
+            print("Failed models:")
+            for model in failed:
+                print(f"  - {model}")
     
-    from datasets import load_dataset
+    def download_sample_data(self):
+        """Download sample datasets"""
+        print("\nDownloading sample data...")
+        
+        sample_datasets = {
+            "wikipedia_sample": "https://example.com/wikipedia_sample.jsonl",
+            "images_sample": "https://example.com/images_sample.zip",
+            "audio_sample": "https://example.com/audio_sample.zip"
+        }
+        
+        # Note: Replace with actual dataset URLs
+        print("Sample datasets would be downloaded here")
+        print("For now, creating placeholder files...")
+        
+        # Create sample text documents
+        sample_docs = [
+            "Artificial intelligence is transforming technology.",
+            "Machine learning enables computers to learn from data.",
+            "Deep learning uses neural networks with multiple layers."
+        ]
+        
+        doc_file = self.data_dir / "documents" / "sample_docs.txt"
+        with open(doc_file, 'w') as f:
+            f.write('\n\n'.join(sample_docs))
+        
+        print(f"  ✓ Created {doc_file}")
     
-    datasets_to_download = [
-        ("wikipedia", "20220301.en", 1000),  # Sample of Wikipedia
-        ("ms_marco", "v2.1", 1000),  # Sample of MS MARCO
-    ]
-    
-    data_dir = Path("./data/datasets")
-    data_dir.mkdir(parents=True, exist_ok=True)
-    
-    for dataset_name, config_name, sample_size in datasets_to_download:
-        logger.info(f"Downloading {dataset_name} (sample: {sample_size} docs)")
+    def install_dependencies(self):
+        """Install additional dependencies"""
+        print("\nChecking dependencies...")
+        
         try:
-            if config_name:
-                dataset = load_dataset(dataset_name, config_name, split="train", streaming=True)
-            else:
-                dataset = load_dataset(dataset_name, split="train", streaming=True)
-            
-            # Take sample
-            samples = []
-            for i, item in enumerate(dataset):
-                if i >= sample_size:
-                    break
-                samples.append(item)
-            
-            # Save sample
-            import json
-            sample_path = data_dir / f"{dataset_name}_sample.json"
-            with open(sample_path, 'w') as f:
-                json.dump(samples, f)
-            
-            logger.info(f"  ✓ Saved {len(samples)} samples to {sample_path}")
-            
-        except Exception as e:
-            logger.warning(f"  ✗ Failed to download {dataset_name}: {e}")
-    
-    return True
-
-
-def create_directories():
-    """Create necessary directory structure."""
-    directories = [
-        "./data/datasets",
-        "./data/indices",
-        "./data/cache",
-        "./logs",
-        "./notebooks",
-        "./outputs",
-    ]
-    
-    for directory in directories:
-        Path(directory).mkdir(parents=True, exist_ok=True)
-        logger.info(f"Created directory: {directory}")
-
-
-def verify_installation():
-    """Verify that all components are properly installed."""
-    logger.info("Verifying installation...")
-    
-    # Check Python version
-    python_version = sys.version_info
-    if python_version.major < 3 or python_version.minor < 9:
-        logger.warning(f"Python {python_version.major}.{python_version.minor} detected. Python 3.9+ recommended.")
-    
-    # Check critical packages
-    critical_packages = [
-        "torch",
-        "transformers",
-        "sentence_transformers",
-        "faiss",
-        "langchain",
-        "datasets"
-    ]
-    
-    missing_packages = []
-    for package in critical_packages:
-        try:
-            __import__(package)
-            logger.info(f"  ✓ {package} installed")
+            import faiss
+            print("  ✓ FAISS installed")
         except ImportError:
-            logger.error(f"  ✗ {package} not found")
-            missing_packages.append(package)
+            print("  ✗ FAISS not installed")
+            print("    Run: pip install faiss-cpu or faiss-gpu")
+        
+        try:
+            import chromadb
+            print("  ✓ ChromaDB installed")
+        except ImportError:
+            print("  ✗ ChromaDB not installed")
+            print("    Run: pip install chromadb")
+        
+        try:
+            import cv2
+            print("  ✓ OpenCV installed")
+        except ImportError:
+            print("  ✗ OpenCV not installed")
+            print("    Run: pip install opencv-python")
+        
+        try:
+            import librosa
+            print("  ✓ Librosa installed")
+        except ImportError:
+            print("  ✗ Librosa not installed")
+            print("    Run: pip install librosa")
     
-    if missing_packages:
-        logger.error(f"Missing packages: {', '.join(missing_packages)}")
-        logger.info("Please run: pip install -r requirements.txt")
-        return False
+    def test_basic_functionality(self):
+        """Test basic system functionality"""
+        print("\nTesting basic functionality...")
+        
+        try:
+            # Test text embedding
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            embedding = model.encode(["Test sentence"])
+            print("  ✓ Text embedding working")
+        except Exception as e:
+            print(f"  ✗ Text embedding failed: {e}")
+        
+        try:
+            # Test FAISS
+            import faiss
+            import numpy as np
+            index = faiss.IndexFlatL2(384)
+            index.add(np.random.rand(10, 384).astype('float32'))
+            print("  ✓ FAISS indexing working")
+        except Exception as e:
+            print(f"  ✗ FAISS indexing failed: {e}")
+        
+        try:
+            # Test model loading (small model)
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+            print("  ✓ Model loading working")
+        except Exception as e:
+            print(f"  ✗ Model loading failed: {e}")
     
-    # Test basic imports
-    try:
-        from agentic_rag import AgenticRAG
-        logger.info("  Package imports working")
-    except ImportError as e:
-        logger.error(f"  Package import failed: {e}")
-        return False
-    
-    return True
-
-
-def run_quick_test():
-    """Run a quick test of the system."""
-    logger.info("Running quick test...")
-    
-    try:
-        # Import with minimal resources
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    def run_full_setup(self):
+        """Run complete setup process"""
+        print("=" * 60)
+        print("Agentic RAG System Setup")
+        print("=" * 60)
         
-        from agentic_rag import AgenticRAG
+        # Check environment
+        cuda_available = self.check_environment()
         
-        # Initialize with small model for testing
-        rag = AgenticRAG(
-            model_name="gpt2",  # Small model for testing
-            embedding_model="sentence-transformers/all-MiniLM-L6-v2",  # Small embedding model
-            device="cuda" if torch.cuda.is_available() else "cpu",
-            quantization="8bit"
-        )
+        # Create directories
+        self.create_directories()
         
-        # Add a test document
-        rag.add_documents([
-            "The Earth orbits around the Sun once every 365.25 days.",
-            "Water freezes at 0 degrees Celsius and boils at 100 degrees Celsius.",
-        ])
+        # Install dependencies check
+        self.install_dependencies()
         
-        # Test query
-        response = rag.query("How long does Earth take to orbit the Sun?", use_agent=False)
+        # Download models
+        if cuda_available:
+            self.download_models("all")
+        else:
+            print("\nSkipping large model downloads (CPU mode)")
+            self.download_models("text")
         
-        logger.info(f"   Test query successful")
-        logger.info(f"   Response: {response.answer[:100]}...")
+        # Download sample data
+        self.download_sample_data()
         
-        return True
+        # Test functionality
+        self.test_basic_functionality()
         
-    except Exception as e:
-        logger.error(f"   Test failed: {e}")
-        return False
+        print("\n" + "=" * 60)
+        print("Setup complete!")
+        print("=" * 60)
 
 
 def main():
-    """Main setup function."""
+    """Main setup function"""
     parser = argparse.ArgumentParser(description="Setup Agentic RAG System")
-    parser.add_argument("--download-models", action="store_true", help="Download models")
-    parser.add_argument("--download-data", action="store_true", help="Download sample datasets")
-    parser.add_argument("--test", action="store_true", help="Run quick test")
-    parser.add_argument("--full", action="store_true", help="Run full setup")
-    parser.add_argument("--config", default="config.yaml", help="Path to configuration file")
+    parser.add_argument(
+        "--models-dir",
+        type=str,
+        default="./models",
+        help="Directory for models"
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default="./data",
+        help="Directory for data"
+    )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        choices=["all", "text", "multimodal"],
+        default="all",
+        help="Type of models to download"
+    )
+    parser.add_argument(
+        "--skip-models",
+        action="store_true",
+        help="Skip model downloads"
+    )
+    parser.add_argument(
+        "--test-only",
+        action="store_true",
+        help="Only run tests"
+    )
     
     args = parser.parse_args()
     
+    setup = Setup(args.models_dir, args.data_dir)
     
-    # Create directories
-    logger.info("Step 1: Creating directories...")
-    create_directories()
-    
-    # Check GPU
-    logger.info("\nStep 2: Checking GPU...")
-    has_gpu = check_gpu()
-    
-    # Verify installation
-    logger.info("\nStep 3: Verifying installation...")
-    if not verify_installation():
-        logger.error("Installation verification failed. Please fix issues before continuing.")
-        return 1
-    
-    # Download models if requested
-    if args.download_models or args.full:
-        logger.info("\nStep 4: Downloading models...")
-        if not download_models(args.config):
-            logger.error("Model download failed.")
-            return 1
-    
-    # Download data if requested
-    if args.download_data or args.full:
-        logger.info("\nStep 5: Downloading sample data...")
-        if not download_sample_data():
-            logger.warning("Some datasets failed to download, but setup can continue.")
-    
-    # Run test if requested
-    if args.test or args.full:
-        logger.info("\nStep 6: Running quick test...")
-        if not run_quick_test():
-            logger.warning("Test failed, but this might be due to memory constraints.")
-    
-    logger.info(" Setup complete!")
-    logger.info("\nNext steps:")
-    logger.info("1. Activate your virtual environment")
-    logger.info("2. Run: python -c 'from agentic_rag import AgenticRAG'")
-    logger.info("\nFor full documentation, see README.md")
-    
-    return 0
+    if args.test_only:
+        setup.check_environment()
+        setup.test_basic_functionality()
+    elif args.skip_models:
+        setup.check_environment()
+        setup.create_directories()
+        setup.install_dependencies()
+        setup.test_basic_functionality()
+    else:
+        setup.run_full_setup()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

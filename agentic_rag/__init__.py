@@ -1,22 +1,38 @@
 """
-Agentic RAG System - A production-ready Retrieval-Augmented Generation system
-with autonomous decision-making capabilities.
+Agentic RAG System with Multimodal Support
 """
 
-__version__ = "1.0.0"
-__author__ = "Your Name"
-__license__ = "MIT"
+from .core import AgenticRAG
+from .multimodal import (
+    MultimodalAgenticRAG,
+    MultimodalEmbedder,
+    MultimodalRetriever,
+    MultimodalAgent,
+    Modality,
+    DocumentType,
+    MultimodalDocument,
+    QueryResult
+)
+from .agents import BaseAgent, ReactiveAgent, PlanningAgent
+from .retrieval import HybridRetriever, VectorStore
+from .utils import setup_logging, load_config
 
-from .core.rag_pipeline import AgenticRAG
-from .core.config import Config
-from .agents.rag_agent import RAGAgent
-
+__version__ = "2.0.0"
 __all__ = [
     "AgenticRAG",
-    "Config",
-    "RAGAgent",
+    "MultimodalAgenticRAG",
+    "MultimodalEmbedder",
+    "MultimodalRetriever",
+    "MultimodalAgent",
+    "Modality",
+    "DocumentType",
+    "MultimodalDocument",
+    "QueryResult",
+    "BaseAgent",
+    "ReactiveAgent",
+    "PlanningAgent",
+    "HybridRetriever",
+    "VectorStore",
+    "setup_logging",
+    "load_config"
 ]
-
-# Package metadata
-PACKAGE_NAME = "agentic_rag"
-DESCRIPTION = "Agentic RAG system optimized for 20GB GPUs"
