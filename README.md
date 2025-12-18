@@ -341,6 +341,7 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file.
 - **Hugging Face** for transformers and model hosting
 - **OpenAI** for CLIP and Whisper models
 - **Meta** for Llama models
+- **Mistral** for Mistral models
 - **Salesforce** for BLIP models
 - **FAISS** team for vector search
 - **LangChain** for RAG patterns
