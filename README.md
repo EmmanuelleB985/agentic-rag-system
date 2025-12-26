@@ -347,7 +347,6 @@ agentic-rag-system/
 ├── docker-compose.yml    # Basic Docker deployment
 ├── docker-compose.enhanced.yml # Full stack deployment
 ├── README.md            # Documentation
-└── README_ENHANCED.md   # Detailed API documentation
 ```
 
 ## Performance
