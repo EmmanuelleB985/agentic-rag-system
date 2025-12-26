@@ -71,8 +71,6 @@ for token in client.stream_query("What is RAG?", knowledge_base_id=kb.id):
     print(token, end="", flush=True)
 ```
 
-See `README_ENHANCED.md` for complete API documentation.
-
 ## Quick Start
 
 ### Prerequisites
