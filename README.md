@@ -37,6 +37,42 @@ Retrieval-Augmented Generation system with **multimodal capabilities** (text, im
 * **Video Understanding**: Frame extraction and temporal analysis
 * **Document Processing**: OCR, table extraction, metadata parsing
 
+## FastAPI Interface
+
+### Production-Ready REST API
+The system now includes a comprehensive FastAPI interface.
+
+#### Quick API Start
+```bash
+# Using Docker Compose (recommended)
+docker-compose -f docker-compose.enhanced.yml up -d
+
+# Or run the enhanced server directly
+python api/enhanced_server.py
+```
+
+Access the API at `http://localhost:8000` and interactive docs at `http://localhost:8000/docs`
+
+#### Python Client SDK
+```python
+from client.enhanced_client import create_client
+
+# Initialize client
+client = create_client("http://localhost:8000")
+
+# Create knowledge base
+kb = client.create_knowledge_base("Technical Docs")
+
+# Upload document
+doc = client.upload_file("document.pdf", knowledge_base_id=kb.id)
+
+# Query with streaming
+for token in client.stream_query("What is RAG?", knowledge_base_id=kb.id):
+    print(token, end="", flush=True)
+```
+
+See `README_ENHANCED.md` for complete API documentation.
+
 ## Quick Start
 
 ### Prerequisites
@@ -171,6 +207,57 @@ result = await rag.multimodal_query(
 )
 ```
 
+### FastAPI Usage
+
+```python
+from client.enhanced_client import create_client, TaskType
+
+# Initialize client
+client = create_client("http://localhost:8000")
+
+# Create and manage knowledge bases
+kb = client.create_knowledge_base(
+    name="Research Papers",
+    vector_store_type="qdrant"
+)
+
+# Upload documents with advanced processing
+doc = client.upload_file(
+    "research_paper.pdf",
+    knowledge_base_id=kb.id,
+    process_tables=True,
+    extract_entities=True
+)
+
+# Advanced querying with agent selection
+result = client.query(
+    query="What are the key findings?",
+    knowledge_base_id=kb.id,
+    agent_type="research",
+    top_k=10,
+    rerank=True
+)
+
+# Execute specialized agent tasks
+task_id = client.execute_agent_task(
+    task_type=TaskType.SUMMARIZE,
+    parameters={"max_length": 500},
+    knowledge_base_id=kb.id
+)
+
+# Real-time WebSocket chat
+import asyncio
+from client.enhanced_client import create_websocket_client
+
+async def chat():
+    ws = create_websocket_client()
+    await ws.connect()
+    response = await ws.send_query("Explain the research methodology")
+    print(response['answer'])
+
+asyncio.run(chat())
+```
+
 ## Configuration
 
 Edit `config.yaml` to customize:
@@ -246,6 +333,11 @@ agentic-rag-system/
 │   ├── agents.py          # Agent implementations
 │   ├── retrieval.py       # Advanced retrieval
 │   └── utils.py           # Utilities
+├── api/                   # FastAPI interface
+│   ├── server.py          # Original API server
+│   └── enhanced_server.py # Enhanced API with full features
+├── client/                # Client SDKs
+│   └── enhanced_client.py # Python client SDK
 ├── examples/              # Usage examples
 │   ├── basic_usage.py
 │   └── multimodal_demo.py
@@ -254,7 +346,10 @@ agentic-rag-system/
 │   └── evaluate.py
 ├── config.yaml           # Configuration
 ├── requirements.txt      # Dependencies
-└── README.md            # Documentation
+├── docker-compose.yml    # Basic Docker deployment
+├── docker-compose.enhanced.yml # Full stack deployment
+├── README.md            # Documentation
+└── README_ENHANCED.md   # Detailed API documentation
 ```
 
 ## Performance
@@ -331,6 +426,42 @@ This implementation incorporates techniques from:
 - **ReAct**: [Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)
 - **CLIP**: [Learning Transferable Visual Models From Natural Language Supervision](https://arxiv.org/abs/2103.00020)
 - **BLIP-2**: [Bootstrapping Language-Image Pre-training](https://arxiv.org/abs/2301.12597)
+
+## Deployment & Monitoring
+
+### Docker Deployment
+The system includes comprehensive Docker Compose configurations:
+
+```bash
+# Basic deployment (API + core services)
+docker-compose up -d
+
+# Full stack with monitoring
+docker-compose -f docker-compose.enhanced.yml up -d
+```
+
+### Available Services
+- **API**: FastAPI server at `http://localhost:8000`
+- **Documentation**: Interactive API docs at `http://localhost:8000/docs`
+- **Monitoring**: Grafana dashboards at `http://localhost:3000`
+- **Metrics**: Prometheus at `http://localhost:9090`
+- **Job Monitoring**: Flower (Celery) at `http://localhost:5555`
+- **Tracing**: Jaeger at `http://localhost:16686`
+
+### Vector Database Options
+The deployment includes multiple vector database options:
+- **Qdrant**: High-performance vector search (port 6333)
+- **Milvus**: Distributed vector database (port 19530)
+- **Weaviate**: GraphQL-based vector search (port 8080)
+- **Chroma**: Embedded vector database (default)
+
+### Scaling
+The system supports horizontal scaling with:
+- Multiple API instances behind a load balancer
+- Distributed background job processing with Celery
+- Redis-based caching and session management
+- Auto-scaling based on CPU/memory metrics
+
 
 ## License
 
